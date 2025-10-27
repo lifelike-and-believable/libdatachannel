@@ -59,14 +59,19 @@ jobs:
 
       - name: Build MbedTLS (if selected)
         if: ${{ inputs.tls_backend == 'mbedtls' }}
+        env:
+          PYBIN: python3
         run: |
           git clone --depth 1 --branch "${MBEDTLS_TAG}" https://github.com/Mbed-TLS/mbedtls.git mbedtls
           cd mbedtls
-          # Important: fetch submodules needed by scripts/config.py
           git submodule update --init --recursive --depth 1
           export PYTHONPATH="$(pwd)/scripts:${PYTHONPATH}"
-          python3 scripts/config.py -f include/mbedtls/mbedtls_config.h set MBEDTLS_SSL_DTLS_SRTP
-          cmake -S . -B build -G Ninja -DGEN_FILES=ON -DENABLE_TESTING=OFF -DENABLE_PROGRAMS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install"
+          $PYBIN scripts/config.py -f include/mbedtls/mbedtls_config.h set MBEDTLS_SSL_DTLS_SRTP
+          cmake -S . -B build -G Ninja \
+            -DGEN_FILES=ON -DENABLE_TESTING=OFF -DENABLE_PROGRAMS=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPython3_EXECUTABLE="$(command -v $PYBIN)" \
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install"
           cmake --build build
           cmake --install build
 
@@ -81,9 +86,10 @@ jobs:
             flags="$flags -DUSE_MBEDTLS=OFF"
           fi
           echo "EXTRA_CMAKE_FLAGS=$flags" >> $GITHUB_ENV
+          echo "PY_EXEC=$(command -v python3)" >> $GITHUB_ENV
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release $BASE_CMAKE_FLAGS $EXTRA_CMAKE_FLAGS
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release $BASE_CMAKE_FLAGS $EXTRA_CMAKE_FLAGS -DPython3_EXECUTABLE="$PY_EXEC"
 
       - name: Build
         run: cmake --build build --config Release --parallel
@@ -131,13 +137,19 @@ jobs:
 
       - name: Build MbedTLS (if selected)
         if: ${{ inputs.tls_backend == 'mbedtls' }}
+        env:
+          PYBIN: python3
         run: |
           git clone --depth 1 --branch "${MBEDTLS_TAG}" https://github.com/Mbed-TLS/mbedtls.git mbedtls
           cd mbedtls
           git submodule update --init --recursive --depth 1
           export PYTHONPATH="$(pwd)/scripts:${PYTHONPATH}"
-          python3 scripts/config.py -f include/mbedtls/mbedtls_config.h set MBEDTLS_SSL_DTLS_SRTP
-          cmake -S . -B build -G Ninja -DGEN_FILES=ON -DENABLE_TESTING=OFF -DENABLE_PROGRAMS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install"
+          $PYBIN scripts/config.py -f include/mbedtls/mbedtls_config.h set MBEDTLS_SSL_DTLS_SRTP
+          cmake -S . -B build -G Ninja \
+            -DGEN_FILES=ON -DENABLE_TESTING=OFF -DENABLE_PROGRAMS=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPython3_EXECUTABLE="$(command -v $PYBIN)" \
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install"
           cmake --build build
           cmake --install build
 
@@ -154,9 +166,10 @@ jobs:
             flags="$flags -DUSE_MBEDTLS=OFF"
           fi
           echo "EXTRA_CMAKE_FLAGS=$flags" >> $GITHUB_ENV
+          echo "PY_EXEC=$(command -v python3)" >> $GITHUB_ENV
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release $BASE_CMAKE_FLAGS $EXTRA_CMAKE_FLAGS
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release $BASE_CMAKE_FLAGS $EXTRA_CMAKE_FLAGS -DPython3_EXECUTABLE="$PY_EXEC"
 
       - name: Build
         run: cmake --build build --config Release --parallel
@@ -195,18 +208,26 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install jsonschema jinja2
+
       - name: Set up MSVC env
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Install tools for MbedTLS
-        if: ${{ inputs.tls_backend == 'mbedtls' }}
+      - name: Install Strawberry Perl for GEN_FILES
         shell: pwsh
         run: |
           choco install strawberryperl -y --no-progress
           echo "C:\Strawberry\perl\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          python -V 2>$null || (choco install python -y --no-progress)
-          python -m pip install --upgrade pip
-          python -m pip install jsonschema jinja2
+          perl --version
 
       - name: Build MbedTLS (if selected)
         if: ${{ inputs.tls_backend == 'mbedtls' }}
@@ -216,8 +237,13 @@ jobs:
           Set-Location mbedtls
           git submodule update --init --recursive --depth 1
           $env:PYTHONPATH = "$((Get-Location).Path)\scripts;$env:PYTHONPATH"
+          $py = (Get-Command python).Source
           python scripts/config.py -f include/mbedtls/mbedtls_config.h set MBEDTLS_SSL_DTLS_SRTP
-          cmake -S . -B build -G "NMake Makefiles" -DGEN_FILES=ON -DENABLE_TESTING=OFF -DENABLE_PROGRAMS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}\install"
+          cmake -S . -B build -G "NMake Makefiles" `
+            -DGEN_FILES=ON -DENABLE_TESTING=OFF -DENABLE_PROGRAMS=OFF `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DPython3_EXECUTABLE="$py" `
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}\install"
           cmake --build build --config Release
           cmake --install build --config Release
 
@@ -233,6 +259,7 @@ jobs:
             $flags += " -DUSE_MBEDTLS=OFF"
           }
           echo "EXTRA_CMAKE_FLAGS=$flags" >> $env:GITHUB_ENV
+          echo "PY_EXEC=$((Get-Command python).Source)" >> $env:GITHUB_ENV
 
       - name: Configure
         shell: pwsh
@@ -241,6 +268,7 @@ jobs:
           -G "NMake Makefiles"
           -DCMAKE_BUILD_TYPE=Release
           $env:BASE_CMAKE_FLAGS $env:EXTRA_CMAKE_FLAGS
+          -DPython3_EXECUTABLE="$env:PY_EXEC"
 
       - name: Build
         shell: cmd
