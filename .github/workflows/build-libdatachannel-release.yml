@@ -1,0 +1,319 @@
+name: Build and Release libdatachannel (static + headers)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_name:
+        description: "Release tag/name (e.g., v0.1.0-libdc)"
+        required: true
+        type: string
+      no_media:
+        description: "Disable media (adds -DNO_MEDIA=1)"
+        required: false
+        type: boolean
+        default: false
+      no_websocket:
+        description: "Disable WebSocket (adds -DNO_WEBSOCKET=1)"
+        required: false
+        type: boolean
+        default: false
+      tls_backend:
+        description: "TLS backend for libdatachannel"
+        required: true
+        type: choice
+        default: mbedtls
+        options:
+          - mbedtls
+          - openssl
+
+permissions:
+  contents: write
+
+concurrency:
+  group: libdatachannel-release-${{ github.ref }}-${{ inputs.release_name }}
+  cancel-in-progress: false
+
+env:
+  BASE_CMAKE_FLAGS: -DBUILD_SHARED_LIBS=OFF -DNO_TESTS=1 -DNO_EXAMPLES=1
+  MBEDTLS_TAG: v3.6.5
+
+jobs:
+  linux:
+    name: Linux (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config python3 python3-pip
+          if [ "${{ inputs.tls_backend }}" = "openssl" ]; then
+            sudo apt-get install -y libssl-dev
+          fi
+          python3 -m pip install --upgrade pip
+          python3 -m pip install jsonschema jinja2
+
+      - name: Build MbedTLS (if selected)
+        if: ${{ inputs.tls_backend == 'mbedtls' }}
+        run: |
+          git clone --depth 1 --branch "${MBEDTLS_TAG}" https://github.com/Mbed-TLS/mbedtls.git mbedtls
+          cd mbedtls
+          python3 scripts/config.py set MBEDTLS_SSL_DTLS_SRTP
+          cmake -S . -B build -G Ninja -DGEN_FILES=ON -DENABLE_TESTING=OFF -DENABLE_PROGRAMS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install"
+          cmake --build build
+          cmake --install build
+
+      - name: Compute CMake flags
+        run: |
+          flags=""
+          if [[ "${{ inputs.no_media }}" == "true" ]]; then flags="$flags -DNO_MEDIA=1"; fi
+          if [[ "${{ inputs.no_websocket }}" == "true" ]]; then flags="$flags -DNO_WEBSOCKET=1"; fi
+          if [[ "${{ inputs.tls_backend }}" == "mbedtls" ]]; then
+            flags="$flags -DUSE_MBEDTLS=ON -DCMAKE_PREFIX_PATH=${{ github.workspace }}/install"
+          else
+            flags="$flags -DUSE_MBEDTLS=OFF"
+          fi
+          echo "EXTRA_CMAKE_FLAGS=$flags" >> $GITHUB_ENV
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release $BASE_CMAKE_FLAGS $EXTRA_CMAKE_FLAGS
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Install to staging
+        run: cmake --install build --config Release --prefix "${{ github.workspace }}/staging"
+
+      - name: Copy dependency static libs into staging/lib
+        run: |
+          mkdir -p "${{ github.workspace }}/staging/lib"
+          find build/deps -name "*.a" -type f -exec cp -v {} "${{ github.workspace }}/staging/lib/" \; || true
+          if [ "${{ inputs.tls_backend }}" = "mbedtls" ]; then
+            cp -v "${{ github.workspace }}/install/lib/"libmbedtls.a "${{ github.workspace }}/install/lib/"libmbedx509.a "${{ github.workspace }}/install/lib/"libmbedcrypto.a "${{ github.workspace }}/staging/lib/" || true
+          fi
+
+      - name: Archive
+        run: |
+          OS=linux
+          ARCH=$(uname -m)
+          BACK=${{ inputs.tls_backend }}
+          PKG="libdatachannel-${{ inputs.release_name }}-${OS}-${ARCH}-${BACK}.tar.gz"
+          tar -C "${{ github.workspace }}/staging" -czf "$PKG" .
+          echo "PKG_NAME=$PKG" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ inputs.release_name }}-${{ inputs.tls_backend }}
+          path: ${{ env.PKG_NAME }}
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install tools
+        run: |
+          brew update
+          brew install cmake ninja openssl || true
+          python3 -m pip install --upgrade pip
+          python3 -m pip install jsonschema jinja2
+
+      - name: Build MbedTLS (if selected)
+        if: ${{ inputs.tls_backend == 'mbedtls' }}
+        run: |
+          git clone --depth 1 --branch "${MBEDTLS_TAG}" https://github.com/Mbed-TLS/mbedtls.git mbedtls
+          cd mbedtls
+          python3 scripts/config.py set MBEDTLS_SSL_DTLS_SRTP
+          cmake -S . -B build -G Ninja -DGEN_FILES=ON -DENABLE_TESTING=OFF -DENABLE_PROGRAMS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install"
+          cmake --build build
+          cmake --install build
+
+      - name: Compute CMake flags
+        run: |
+          flags=""
+          if [[ "${{ inputs.no_media }}" == "true" ]]; then flags="$flags -DNO_MEDIA=1"; fi
+          if [[ "${{ inputs.no_websocket }}" == "true" ]]; then flags="$flags -DNO_WEBSOCKET=1"; fi
+          if [[ "${{ inputs.tls_backend }}" == "mbedtls" ]]; then
+            flags="$flags -DUSE_MBEDTLS=ON -DCMAKE_PREFIX_PATH=${{ github.workspace }}/install"
+          else
+            OPENSSL_ROOT="$(brew --prefix openssl@3 || true)"
+            if [ -n "$OPENSSL_ROOT" ]; then flags="$flags -DOPENSSL_ROOT_DIR=$OPENSSL_ROOT"; fi
+            flags="$flags -DUSE_MBEDTLS=OFF"
+          fi
+          echo "EXTRA_CMAKE_FLAGS=$flags" >> $GITHUB_ENV
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release $BASE_CMAKE_FLAGS $EXTRA_CMAKE_FLAGS
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Install to staging
+        run: cmake --install build --config Release --prefix "${{ github.workspace }}/staging"
+
+      - name: Copy dependency static libs into staging/lib
+        run: |
+          mkdir -p "${{ github.workspace }}/staging/lib"
+          find build/deps -name "*.a" -type f -exec cp -v {} "${{ github.workspace }}/staging/lib/" \; || true
+          if [ "${{ inputs.tls_backend }}" = "mbedtls" ]; then
+            cp -v "${{ github.workspace }}/install/lib/"libmbedtls.a "${{ github.workspace }}/install/lib/"libmbedx509.a "${{ github.workspace }}/install/lib/"libmbedcrypto.a "${{ github.workspace }}/staging/lib/" || true
+          fi
+
+      - name: Archive
+        run: |
+          OS=macos
+          ARCH=$(uname -m)
+          BACK=${{ inputs.tls_backend }}
+          PKG="libdatachannel-${{ inputs.release_name }}-${OS}-${ARCH}-${BACK}.tar.gz"
+          tar -C "${{ github.workspace }}/staging" -czf "$PKG" .
+          echo "PKG_NAME=$PKG" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ inputs.release_name }}-${{ inputs.tls_backend }}
+          path: ${{ env.PKG_NAME }}
+
+  windows:
+    name: Windows (self-hosted)
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Set up MSVC env
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install tools for MbedTLS
+        if: ${{ inputs.tls_backend == 'mbedtls' }}
+        shell: pwsh
+        run: |
+          choco install strawberryperl -y --no-progress
+          echo "C:\Strawberry\perl\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          python -V 2>$null || (choco install python -y --no-progress)
+          python -m pip install --upgrade pip
+          python -m pip install jsonschema jinja2
+
+      - name: Build MbedTLS (if selected)
+        if: ${{ inputs.tls_backend == 'mbedtls' }}
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch "${env:MBEDTLS_TAG}" https://github.com/Mbed-TLS/mbedtls.git mbedtls
+          cd mbedtls
+          python scripts/config.py set MBEDTLS_SSL_DTLS_SRTP
+          cmake -S . -B build -G "NMake Makefiles" -DGEN_FILES=ON -DENABLE_TESTING=OFF -DENABLE_PROGRAMS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}\install"
+          cmake --build build --config Release
+          cmake --install build --config Release
+
+      - name: Compute CMake flags
+        shell: pwsh
+        run: |
+          $flags = ""
+          if ("${{ inputs.no_media }}" -eq "true") { $flags += " -DNO_MEDIA=1" }
+          if ("${{ inputs.no_websocket }}" -eq "true") { $flags += " -DNO_WEBSOCKET=1" }
+          if ("${{ inputs.tls_backend }}" -eq "mbedtls") {
+            $flags += " -DUSE_MBEDTLS=ON -DCMAKE_PREFIX_PATH=${{ github.workspace }}\install"
+          } else {
+            $flags += " -DUSE_MBEDTLS=OFF"
+          }
+          echo "EXTRA_CMAKE_FLAGS=$flags" >> $env:GITHUB_ENV
+
+      - name: Configure
+        shell: pwsh
+        run: >
+          cmake -S . -B build
+          -G "NMake Makefiles"
+          -DCMAKE_BUILD_TYPE=Release
+          $env:BASE_CMAKE_FLAGS $env:EXTRA_CMAKE_FLAGS
+
+      - name: Build
+        shell: cmd
+        run: |
+          cd build
+          set CL=/MP
+          nmake
+
+      - name: Install to staging
+        shell: pwsh
+        run: cmake --install build --config Release --prefix "${{ github.workspace }}\staging"
+
+      - name: Copy dependency static libs into staging\lib
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\staging\lib" | Out-Null
+          Get-ChildItem -Path "build\deps" -Recurse -Filter "*.lib" -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName "${{ github.workspace }}\staging\lib\" -Force
+          }
+          if ("${{ inputs.tls_backend }}" -eq "mbedtls") {
+            Copy-Item "${{ github.workspace }}\install\lib\mbedtls.lib" "${{ github.workspace }}\staging\lib\" -Force
+            Copy-Item "${{ github.workspace }}\install\lib\mbedx509.lib" "${{ github.workspace }}\staging\lib\" -Force
+            Copy-Item "${{ github.workspace }}\install\lib\mbedcrypto.lib" "${{ github.workspace }}\staging\lib\" -Force
+          }
+
+      - name: Archive
+        shell: pwsh
+        run: |
+          $OS = "windows"
+          $ARCH = "x64"
+          $BACK = "${{ inputs.tls_backend }}"
+          $pkg = "libdatachannel-${{ inputs.release_name }}-$OS-$ARCH-$BACK.zip"
+          Compress-Archive -Path "${{ github.workspace }}\staging\*" -DestinationPath "$pkg"
+          echo "PKG_NAME=$pkg" >> $env:GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ inputs.release_name }}-${{ inputs.tls_backend }}
+          path: ${{ env.PKG_NAME }}
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [linux, macos, windows]
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-${{ inputs.release_name }}-${{ inputs.tls_backend }}"
+          merge-multiple: true
+          path: dist
+
+      - name: List assets
+        run: ls -la dist
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          MEDIA_NOTE=$([ "${{ inputs.no_media }}" = "true" ] && echo "Media: disabled (-DNO_MEDIA=1)" || echo "Media: enabled")
+          WS_NOTE=$([ "${{ inputs.no_websocket }}" = "true" ] && echo "WebSocket: disabled (-DNO_WEBSOCKET=1)" || echo "WebSocket: enabled")
+          TLS_NOTE="TLS backend: ${{ inputs.tls_backend }}"
+          printf "%s\n%s\n%s\n" "$MEDIA_NOTE" "$WS_NOTE" "$TLS_NOTE" > RELEASE_NOTES.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_name }}
+          name: libdatachannel ${{ inputs.release_name }}
+          body_path: RELEASE_NOTES.txt
+          fail_on_unmatched_files: true
+          files: |
+            dist/libdatachannel-${{ inputs.release_name }}-linux-*.tar.gz
+            dist/libdatachannel-${{ inputs.release_name }}-macos-*.tar.gz
+            dist/libdatachannel-${{ inputs.release_name }}-windows-*.zip
