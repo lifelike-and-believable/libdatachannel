@@ -102,7 +102,10 @@ jobs:
           mkdir -p "${{ github.workspace }}/staging/lib"
           find build/deps -name "*.a" -type f -exec cp -v {} "${{ github.workspace }}/staging/lib/" \; || true
           if [ "${{ inputs.tls_backend }}" = "mbedtls" ]; then
-            cp -v "${{ github.workspace }}/install/lib/"libmbedtls.a "${{ github.workspace }}/install/lib/"libmbedx509.a "${{ github.workspace }}/install/lib/"libmbedcrypto.a "${{ github.workspace }}/staging/lib/" || true
+            cp -v "${{ github.workspace }}/install/lib/libmbedtls.a" \
+                  "${{ github.workspace }}/install/lib/libmbedx509.a" \
+                  "${{ github.workspace }}/install/lib/libmbedcrypto.a" \
+                  "${{ github.workspace }}/staging/lib/"
           fi
 
       - name: Archive
@@ -182,7 +185,10 @@ jobs:
           mkdir -p "${{ github.workspace }}/staging/lib"
           find build/deps -name "*.a" -type f -exec cp -v {} "${{ github.workspace }}/staging/lib/" \; || true
           if [ "${{ inputs.tls_backend }}" = "mbedtls" ]; then
-            cp -v "${{ github.workspace }}/install/lib/"libmbedtls.a "${{ github.workspace }}/install/lib/"libmbedx509.a "${{ github.workspace }}/install/lib/"libmbedcrypto.a "${{ github.workspace }}/staging/lib/" || true
+            cp -v "${{ github.workspace }}/install/lib/libmbedtls.a" \
+                  "${{ github.workspace }}/install/lib/libmbedx509.a" \
+                  "${{ github.workspace }}/install/lib/libmbedcrypto.a" \
+                  "${{ github.workspace }}/staging/lib/"
           fi
 
       - name: Archive
@@ -246,7 +252,7 @@ jobs:
             "-DPython3_EXECUTABLE=$py",
             "-DCMAKE_INSTALL_PREFIX=${{ github.workspace }}\install"
           )
-          Write-Host "MbedTLS cmake args:`n$($cmakeArgs -join \"`n\")"
+          Write-Host ("MbedTLS cmake args:`n{0}" -f ($cmakeArgs -join "`n"))
           cmake @cmakeArgs
           cmake --build build --config Release
           cmake --install build --config Release
@@ -282,7 +288,7 @@ jobs:
           if ($env:PY_EXEC) {
             $cmakeArgs += "-DPython3_EXECUTABLE=$($env:PY_EXEC)"
           }
-          Write-Host "cmake args:`n$($cmakeArgs -join \"`n\")"
+          Write-Host ("cmake args:`n{0}" -f ($cmakeArgs -join "`n"))
           cmake @cmakeArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
