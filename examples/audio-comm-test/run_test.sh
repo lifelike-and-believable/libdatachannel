@@ -31,8 +31,13 @@ fi
 
 # Check if websockets module is installed
 if ! python3 -c "import websockets" 2>/dev/null; then
-    echo "Installing websockets module..."
-    pip3 install websockets
+    echo "Warning: Python websockets module not found."
+    echo "Installing to user directory..."
+    pip3 install --user websockets || {
+        echo "Error: Failed to install websockets. Please install manually:"
+        echo "  pip3 install --user websockets"
+        exit 1
+    }
 fi
 
 echo "Starting signaling server on port 8080..."
@@ -63,8 +68,13 @@ echo ""
 
 # Cleanup
 echo "Cleaning up processes..."
-kill $SERVER_PID 2>/dev/null || true
-kill $SIGNALING_PID 2>/dev/null || true
+# Try graceful shutdown first
+kill -TERM $SERVER_PID 2>/dev/null || true
+kill -TERM $SIGNALING_PID 2>/dev/null || true
+sleep 1
+# Force kill if still running
+kill -KILL $SERVER_PID 2>/dev/null || true
+kill -KILL $SIGNALING_PID 2>/dev/null || true
 
 if [ $CLIENT_EXIT_CODE -eq 0 ]; then
     echo "✓ Test PASSED"
