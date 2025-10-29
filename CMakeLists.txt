@@ -615,5 +615,8 @@ if(NOT NO_EXAMPLES)
 	endif()
 	add_subdirectory(examples/copy-paste)
 	add_subdirectory(examples/copy-paste-capi)
+	if(NOT NO_MEDIA AND NOT NO_WEBSOCKET)
+		add_subdirectory(examples/audio-comm-test)
+	endif()
 endif()
 
