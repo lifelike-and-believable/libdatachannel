@@ -83,7 +83,8 @@ jobs:
           if [[ "${{ inputs.tls_backend }}" == "mbedtls" ]]; then
             flags="$flags -DUSE_MBEDTLS=ON -DCMAKE_PREFIX_PATH=${{ github.workspace }}/install"
           else
-            flags="$flags -DUSE_MBEDTLS=OFF"
+            # Prefer static OpenSSL if available on the runner
+            flags="$flags -DUSE_MBEDTLS=OFF -DOPENSSL_USE_STATIC_LIBS=ON"
           fi
           echo "EXTRA_CMAKE_FLAGS=$flags" >> $GITHUB_ENV
           echo "PY_EXEC=$(command -v python3)" >> $GITHUB_ENV
@@ -106,6 +107,20 @@ jobs:
                   "${{ github.workspace }}/install/lib/libmbedx509.a" \
                   "${{ github.workspace }}/install/lib/libmbedcrypto.a" \
                   "${{ github.workspace }}/staging/lib/"
+          else
+            # Try to bundle OpenSSL static libraries if present on the runner
+            if pkg-config --exists openssl; then
+              OPENSSL_LIBDIR="$(pkg-config --variable=libdir openssl || true)"
+              for lib in libssl.a libcrypto.a; do
+                if [ -f "$OPENSSL_LIBDIR/$lib" ]; then
+                  cp -v "$OPENSSL_LIBDIR/$lib" "${{ github.workspace }}/staging/lib/"
+                else
+                  echo "Warning: $lib not found in $OPENSSL_LIBDIR; OpenSSL static libs may not be available on this runner."
+                fi
+              done
+            else
+              echo "Warning: pkg-config 'openssl' not found; skipping bundling OpenSSL libs."
+            fi
           fi
 
       - name: Archive
@@ -174,10 +189,13 @@ jobs:
           else
             OPENSSL_ROOT="$(brew --prefix openssl@3 || true)"
             if [ -n "$OPENSSL_ROOT" ]; then flags="$flags -DOPENSSL_ROOT_DIR=$OPENSSL_ROOT"; fi
-            flags="$flags -DUSE_MBEDTLS=OFF"
+            # Prefer static OpenSSL if Homebrew provides .a (often not available)
+            flags="$flags -DUSE_MBEDTLS=OFF -DOPENSSL_USE_STATIC_LIBS=ON"
           fi
           echo "EXTRA_CMAKE_FLAGS=$flags" >> $GITHUB_ENV
           echo "PY_EXEC=$(command -v python)" >> $GITHUB_ENV
+          # Export OPENSSL_ROOT for later copy step
+          if [ -n "$OPENSSL_ROOT" ]; then echo "OPENSSL_ROOT=$OPENSSL_ROOT" >> $GITHUB_ENV; fi
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release $BASE_CMAKE_FLAGS $EXTRA_CMAKE_FLAGS -DPython3_EXECUTABLE="$PY_EXEC"
@@ -197,6 +215,18 @@ jobs:
                   "${{ github.workspace }}/install/lib/libmbedx509.a" \
                   "${{ github.workspace }}/install/lib/libmbedcrypto.a" \
                   "${{ github.workspace }}/staging/lib/"
+          else
+            if [ -n "${OPENSSL_ROOT:-}" ]; then
+              for lib in libssl.a libcrypto.a; do
+                if [ -f "$OPENSSL_ROOT/lib/$lib" ]; then
+                  cp -v "$OPENSSL_ROOT/lib/$lib" "${{ github.workspace }}/staging/lib/"
+                else
+                  echo "Warning: $lib not found in $OPENSSL_ROOT/lib; Homebrew may not provide static OpenSSL libs."
+                fi
+              done
+            else
+              echo "Warning: OPENSSL_ROOT not set; skipping bundling OpenSSL libs."
+            fi
           fi
 
       - name: Archive
@@ -357,6 +387,19 @@ jobs:
             Copy-Item "${{ github.workspace }}\install\lib\mbedtls.lib" "${{ github.workspace }}\staging\lib\" -Force
             Copy-Item "${{ github.workspace }}\install\lib\mbedx509.lib" "${{ github.workspace }}\staging\lib\" -Force
             Copy-Item "${{ github.workspace }}\install\lib\mbedcrypto.lib" "${{ github.workspace }}\staging\lib\" -Force
+          } elseif ("${{ inputs.tls_backend }}" -eq "openssl") {
+            $opensslRoot = "C:/Program Files/OpenSSL-Win64"
+            $sslLibDir = "$opensslRoot/lib/VC/x64/MT"
+            if (Test-Path "$sslLibDir/libcrypto.lib") {
+              Copy-Item "$sslLibDir/libcrypto.lib" "${{ github.workspace }}\staging\lib\" -Force
+            } else {
+              Write-Warning "OpenSSL libcrypto.lib not found at $sslLibDir"
+            }
+            if (Test-Path "$sslLibDir/libssl.lib") {
+              Copy-Item "$sslLibDir/libssl.lib" "${{ github.workspace }}\staging\lib\" -Force
+            } else {
+              Write-Warning "OpenSSL libssl.lib not found at $sslLibDir"
+            }
           }
 
       - name: Archive
