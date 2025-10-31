@@ -275,6 +275,15 @@ jobs:
             $flags += " -DUSE_MBEDTLS=ON -DCMAKE_PREFIX_PATH=${{ github.workspace }}\install"
           } else {
             $flags += " -DUSE_MBEDTLS=OFF"
+            # OpenSSL paths for self-hosted Windows runner
+            $OPENSSL_ROOT = "C:\Program Files\OpenSSL-Win64"
+            $OPENSSL_INCLUDE_DIR = "$OPENSSL_ROOT\include"
+            $OPENSSL_LIBRARY_DIR = "$OPENSSL_ROOT\lib\VC\x64\MT"
+            echo "OPENSSL_ROOT_DIR=$OPENSSL_ROOT" >> $env:GITHUB_ENV
+            echo "OPENSSL_INCLUDE_DIR=$OPENSSL_INCLUDE_DIR" >> $env:GITHUB_ENV
+            echo "OPENSSL_LIBRARY_DIR=$OPENSSL_LIBRARY_DIR" >> $env:GITHUB_ENV
+            echo "OPENSSL_CRYPTO_LIBRARY=$OPENSSL_LIBRARY_DIR\libcrypto.lib" >> $env:GITHUB_ENV
+            echo "OPENSSL_SSL_LIBRARY=$OPENSSL_LIBRARY_DIR\libssl.lib" >> $env:GITHUB_ENV
           }
           echo "EXTRA_CMAKE_FLAGS=$flags" >> $env:GITHUB_ENV
           echo "PY_EXEC=$((Get-Command python).Source)" >> $env:GITHUB_ENV
@@ -293,6 +302,12 @@ jobs:
           if ($env:EXTRA_CMAKE_FLAGS) {
             $cmakeArgs += ($env:EXTRA_CMAKE_FLAGS -split '\s+' | Where-Object { $_ })
           }
+          # Add explicit OpenSSL flags as separate args to preserve spaces in paths
+          if ($env:OPENSSL_ROOT_DIR)      { $cmakeArgs += "-DOPENSSL_ROOT_DIR=$($env:OPENSSL_ROOT_DIR)" }
+          if ($env:OPENSSL_INCLUDE_DIR)   { $cmakeArgs += "-DOPENSSL_INCLUDE_DIR=$($env:OPENSSL_INCLUDE_DIR)" }
+          if ($env:OPENSSL_LIBRARY_DIR)   { $cmakeArgs += "-DOPENSSL_LIBRARY_DIR=$($env:OPENSSL_LIBRARY_DIR)" }
+          if ($env:OPENSSL_CRYPTO_LIBRARY){ $cmakeArgs += "-DOPENSSL_CRYPTO_LIBRARY=$($env:OPENSSL_CRYPTO_LIBRARY)" }
+          if ($env:OPENSSL_SSL_LIBRARY)   { $cmakeArgs += "-DOPENSSL_SSL_LIBRARY=$($env:OPENSSL_SSL_LIBRARY)" }
           if ($env:PY_EXEC) {
             $cmakeArgs += "-DPython3_EXECUTABLE=$($env:PY_EXEC)"
           }
