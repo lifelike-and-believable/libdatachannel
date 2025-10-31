@@ -235,6 +235,8 @@ jobs:
 
       - name: Set up MSVC env
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Install Strawberry Perl for GEN_FILES
         shell: pwsh
@@ -254,18 +256,20 @@ jobs:
           $py = (Get-Command python).Source
           python scripts/config.py -f include/mbedtls/mbedtls_config.h set MBEDTLS_SSL_DTLS_SRTP
           $cmakeArgs = @(
-            "-S", ".", "-B", "build", "-G", "NMake Makefiles",
+            "-S", ".", "-B", "build",
+            "-G", "Ninja",
             "-DGEN_FILES=ON", "-DENABLE_TESTING=OFF", "-DENABLE_PROGRAMS=OFF",
             "-DCMAKE_BUILD_TYPE=Release",
             "-DPython3_EXECUTABLE=$py",
             "-DCMAKE_INSTALL_PREFIX=${{ github.workspace }}\install"
           )
           Write-Host ("MbedTLS cmake args:`n{0}" -f ($cmakeArgs -join "`n"))
+          cmake -E make_directory build
           cmake @cmakeArgs
           cmake --build build --config Release
           cmake --install build --config Release
 
-      - name: Compute CMake flags
+      - name: Compute CMake flags (feature toggles)
         shell: pwsh
         run: |
           $flags = ""
@@ -275,43 +279,60 @@ jobs:
             $flags += " -DUSE_MBEDTLS=ON -DCMAKE_PREFIX_PATH=${{ github.workspace }}\install"
           } else {
             $flags += " -DUSE_MBEDTLS=OFF"
-            # OpenSSL paths for self-hosted Windows runner
-            $OPENSSL_ROOT = "C:\Program Files\OpenSSL-Win64"
-            $OPENSSL_INCLUDE_DIR = "$OPENSSL_ROOT\include"
-            $OPENSSL_LIBRARY_DIR = "$OPENSSL_ROOT\lib\VC\x64\MT"
-            echo "OPENSSL_ROOT_DIR=$OPENSSL_ROOT" >> $env:GITHUB_ENV
-            echo "OPENSSL_INCLUDE_DIR=$OPENSSL_INCLUDE_DIR" >> $env:GITHUB_ENV
-            echo "OPENSSL_LIBRARY_DIR=$OPENSSL_LIBRARY_DIR" >> $env:GITHUB_ENV
-            echo "OPENSSL_CRYPTO_LIBRARY=$OPENSSL_LIBRARY_DIR\libcrypto.lib" >> $env:GITHUB_ENV
-            echo "OPENSSL_SSL_LIBRARY=$OPENSSL_LIBRARY_DIR\libssl.lib" >> $env:GITHUB_ENV
           }
           echo "EXTRA_CMAKE_FLAGS=$flags" >> $env:GITHUB_ENV
           echo "PY_EXEC=$((Get-Command python).Source)" >> $env:GITHUB_ENV
 
-      - name: Configure
+      - name: Configure (Visual Studio generator with explicit OpenSSL)
         shell: pwsh
         run: |
           $cmakeArgs = @(
             "-S", ".", "-B", "build",
-            "-G", "NMake Makefiles",
+            "-G", "Visual Studio 17 2022",
+            "-A", "x64",
             "-DCMAKE_BUILD_TYPE=Release"
           )
+
           if ($env:BASE_CMAKE_FLAGS) {
             $cmakeArgs += ($env:BASE_CMAKE_FLAGS -split '\s+' | Where-Object { $_ })
           }
           if ($env:EXTRA_CMAKE_FLAGS) {
             $cmakeArgs += ($env:EXTRA_CMAKE_FLAGS -split '\s+' | Where-Object { $_ })
           }
-          # Add explicit OpenSSL flags as separate args to preserve spaces in paths
-          if ($env:OPENSSL_ROOT_DIR)      { $cmakeArgs += "-DOPENSSL_ROOT_DIR=$($env:OPENSSL_ROOT_DIR)" }
-          if ($env:OPENSSL_INCLUDE_DIR)   { $cmakeArgs += "-DOPENSSL_INCLUDE_DIR=$($env:OPENSSL_INCLUDE_DIR)" }
-          if ($env:OPENSSL_LIBRARY_DIR)   { $cmakeArgs += "-DOPENSSL_LIBRARY_DIR=$($env:OPENSSL_LIBRARY_DIR)" }
-          if ($env:OPENSSL_CRYPTO_LIBRARY){ $cmakeArgs += "-DOPENSSL_CRYPTO_LIBRARY=$($env:OPENSSL_CRYPTO_LIBRARY)" }
-          if ($env:OPENSSL_SSL_LIBRARY)   { $cmakeArgs += "-DOPENSSL_SSL_LIBRARY=$($env:OPENSSL_SSL_LIBRARY)" }
           if ($env:PY_EXEC) {
             $cmakeArgs += "-DPython3_EXECUTABLE=$($env:PY_EXEC)"
           }
+
+          if ("${{ inputs.tls_backend }}" -eq "openssl") {
+            $opensslRoot = "C:/Program Files/OpenSSL-Win64"
+            if (-not (Test-Path $opensslRoot)) {
+              throw "OpenSSL not found at $opensslRoot"
+            }
+            $sslLibDir = "$opensslRoot/lib/VC/x64/MT"
+            if (-not (Test-Path "$sslLibDir/libcrypto.lib")) {
+              throw "Missing $sslLibDir/libcrypto.lib"
+            }
+            if (-not (Test-Path "$sslLibDir/libssl.lib")) {
+              throw "Missing $sslLibDir/libssl.lib"
+            }
+
+            Write-Host "OpenSSL root: $opensslRoot"
+            Get-ChildItem $sslLibDir | Out-Host
+
+            $cmakeArgs += @(
+              "-DOPENSSL_ROOT_DIR=$opensslRoot",
+              "-DOPENSSL_INCLUDE_DIR=$opensslRoot/include",
+              "-DOPENSSL_CRYPTO_LIBRARY=$sslLibDir/libcrypto.lib",
+              "-DOPENSSL_SSL_LIBRARY=$sslLibDir/libssl.lib",
+              "-DOPENSSL_USE_STATIC_LIBS=ON"
+            )
+          }
+
+          # Ensure static MT runtime to match MT OpenSSL libs
+          $cmakeArgs += "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
+
           Write-Host ("cmake args:`n{0}" -f ($cmakeArgs -join "`n"))
+          cmake -E make_directory build
           cmake @cmakeArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
