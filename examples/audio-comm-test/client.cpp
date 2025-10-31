@@ -19,6 +19,10 @@
 #include <thread>
 #include <vector>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 using namespace std::chrono_literals;
 using std::shared_ptr;
 using std::weak_ptr;
