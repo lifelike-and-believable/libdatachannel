@@ -34,7 +34,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BASE_CMAKE_FLAGS: -DBUILD_SHARED_LIBS=OFF -DNO_TESTS=1 -DNO_EXAMPLES=1
+  BASE_CMAKE_FLAGS: -DBUILD_SHARED_LIBS=OFF
   MBEDTLS_TAG: v3.6.5
 
 jobs:
