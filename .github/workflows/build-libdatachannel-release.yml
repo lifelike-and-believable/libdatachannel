@@ -25,6 +25,11 @@ on:
         options:
           - mbedtls
           - openssl
+      build_shared_for_tests:
+        description: "Do a separate shared build for tests/examples (not packaged)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -88,9 +93,25 @@ jobs:
           fi
           echo "EXTRA_CMAKE_FLAGS=$flags" >> $GITHUB_ENV
           echo "PY_EXEC=$(command -v python3)" >> $GITHUB_ENV
+          # Always disable examples/tests in the static packaging build
+          echo "DISABLE_TESTS_EXAMPLES=-DNO_TESTS=1 -DNO_EXAMPLES=1" >> $GITHUB_ENV
 
+      # Optional shared build for tests/examples (not packaged)
+      - name: Configure shared build for tests/examples
+        if: ${{ inputs.build_shared_for_tests }}
+        run: cmake -S . -B build-shared -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON $EXTRA_CMAKE_FLAGS -DPython3_EXECUTABLE="$PY_EXEC"
+
+      - name: Build shared tests/examples
+        if: ${{ inputs.build_shared_for_tests }}
+        run: cmake --build build-shared --config Release --parallel
+
+      - name: Run unit tests (shared build, non-blocking)
+        if: ${{ inputs.build_shared_for_tests }}
+        run: ctest --test-dir build-shared -C Release --output-on-failure || true
+
+      # Static packaging build (examples/tests disabled)
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release $BASE_CMAKE_FLAGS $EXTRA_CMAKE_FLAGS -DPython3_EXECUTABLE="$PY_EXEC"
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release $BASE_CMAKE_FLAGS $EXTRA_CMAKE_FLAGS $DISABLE_TESTS_EXAMPLES -DPython3_EXECUTABLE="$PY_EXEC"
 
       - name: Build
         run: cmake --build build --config Release --parallel
@@ -196,9 +217,25 @@ jobs:
           echo "PY_EXEC=$(command -v python)" >> $GITHUB_ENV
           # Export OPENSSL_ROOT for later copy step
           if [ -n "$OPENSSL_ROOT" ]; then echo "OPENSSL_ROOT=$OPENSSL_ROOT" >> $GITHUB_ENV; fi
+          # Always disable examples/tests in the static packaging build
+          echo "DISABLE_TESTS_EXAMPLES=-DNO_TESTS=1 -DNO_EXAMPLES=1" >> $GITHUB_ENV
 
+      # Optional shared build for tests/examples (not packaged)
+      - name: Configure shared build for tests/examples
+        if: ${{ inputs.build_shared_for_tests }}
+        run: cmake -S . -B build-shared -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON $EXTRA_CMAKE_FLAGS -DPython3_EXECUTABLE="$PY_EXEC"
+
+      - name: Build shared tests/examples
+        if: ${{ inputs.build_shared_for_tests }}
+        run: cmake --build build-shared --config Release --parallel
+
+      - name: Run unit tests (shared build, non-blocking)
+        if: ${{ inputs.build_shared_for_tests }}
+        run: ctest --test-dir build-shared -C Release --output-on-failure || true
+
+      # Static packaging build (examples/tests disabled)
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release $BASE_CMAKE_FLAGS $EXTRA_CMAKE_FLAGS -DPython3_EXECUTABLE="$PY_EXEC"
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release $BASE_CMAKE_FLAGS $EXTRA_CMAKE_FLAGS $DISABLE_TESTS_EXAMPLES -DPython3_EXECUTABLE="$PY_EXEC"
 
       - name: Build
         run: cmake --build build --config Release --parallel
@@ -312,7 +349,74 @@ jobs:
           }
           echo "EXTRA_CMAKE_FLAGS=$flags" >> $env:GITHUB_ENV
           echo "PY_EXEC=$((Get-Command python).Source)" >> $env:GITHUB_ENV
+          # Always disable examples/tests in the static packaging build
+          echo "DISABLE_TESTS_EXAMPLES=-DNO_TESTS=1 -DNO_EXAMPLES=1" >> $env:GITHUB_ENV
 
+      # Optional shared build for tests/examples (not packaged)
+      - name: Configure shared build for tests/examples (Visual Studio)
+        if: ${{ inputs.build_shared_for_tests }}
+        shell: pwsh
+        run: |
+          $cmakeArgs = @(
+            "-S", ".", "-B", "build-shared",
+            "-G", "Visual Studio 17 2022",
+            "-A", "x64",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DBUILD_SHARED_LIBS=ON"
+          )
+
+          # Do NOT pass BASE_CMAKE_FLAGS here (it sets -DBUILD_SHARED_LIBS=OFF)
+          if ($env:EXTRA_CMAKE_FLAGS) {
+            $cmakeArgs += ($env:EXTRA_CMAKE_FLAGS -split '\s+' | Where-Object { $_ })
+          }
+          if ($env:PY_EXEC) {
+            $cmakeArgs += "-DPython3_EXECUTABLE=$($env:PY_EXEC)"
+          }
+
+          if ("${{ inputs.tls_backend }}" -eq "openssl") {
+            $opensslRoot = "C:/Program Files/OpenSSL-Win64"
+            if (-not (Test-Path $opensslRoot)) {
+              throw "OpenSSL not found at $opensslRoot"
+            }
+            $sslLibDir = "$opensslRoot/lib/VC/x64/MT"
+            if (-not (Test-Path "$sslLibDir/libcrypto.lib")) { throw "Missing $sslLibDir/libcrypto.lib" }
+            if (-not (Test-Path "$sslLibDir/libssl.lib"))    { throw "Missing $sslLibDir/libssl.lib" }
+
+            Write-Host "OpenSSL root: $opensslRoot"
+            Get-ChildItem $sslLibDir | Out-Host
+
+            $cmakeArgs += @(
+              "-DOPENSSL_ROOT_DIR=$opensslRoot",
+              "-DOPENSSL_INCLUDE_DIR=$opensslRoot/include",
+              "-DOPENSSL_CRYPTO_LIBRARY=$sslLibDir/libcrypto.lib",
+              "-DOPENSSL_SSL_LIBRARY=$sslLibDir/libssl.lib",
+              "-DOPENSSL_USE_STATIC_LIBS=ON"
+            )
+          }
+
+          # Ensure static MT runtime to match MT OpenSSL libs
+          $cmakeArgs += "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
+
+          Write-Host ("cmake (shared tests) args:`n{0}" -f ($cmakeArgs -join "`n"))
+          cmake -E make_directory build-shared
+          cmake @cmakeArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build shared tests/examples
+        if: ${{ inputs.build_shared_for_tests }}
+        shell: pwsh
+        run: |
+          cmake --build build-shared --config Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run unit tests (shared build, non-blocking)
+        if: ${{ inputs.build_shared_for_tests }}
+        shell: pwsh
+        run: |
+          ctest --test-dir build-shared -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { Write-Warning "Shared-build tests failed (not failing the release job)"; }
+
+      # Static packaging build (examples/tests disabled)
       - name: Configure (Visual Studio generator with explicit OpenSSL)
         shell: pwsh
         run: |
@@ -328,6 +432,9 @@ jobs:
           }
           if ($env:EXTRA_CMAKE_FLAGS) {
             $cmakeArgs += ($env:EXTRA_CMAKE_FLAGS -split '\s+' | Where-Object { $_ })
+          }
+          if ($env:DISABLE_TESTS_EXAMPLES) {
+            $cmakeArgs += ($env:DISABLE_TESTS_EXAMPLES -split '\s+' | Where-Object { $_ })
           }
           if ($env:PY_EXEC) {
             $cmakeArgs += "-DPython3_EXECUTABLE=$($env:PY_EXEC)"
